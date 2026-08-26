@@ -90,7 +90,16 @@ YYYY-MM-DD | Short description of change | Diff reviewed: yes/no | Tests passed:
 
 ## Enforcement notes
 
-Instructions in AGENTS.md/CLAUDE.md are context, not hard constraints — an agent can in principle ignore them. **Hooks are deterministic**: they run as shell commands at fixed lifecycle events and fire every time, with no exceptions. Prefer a hook over an instruction for anything that must run at a fixed point rather than "asked nicely."
+The actual harness is the hooks, not AGENTS.md. These two mechanisms serve different roles:
+
+| Mechanism | Role |
+|---|---|
+| AGENTS.md boundaries | Guides the model's choices (soft) |
+| Hooks | Enforces outcomes at fixed lifecycle points (hard) |
+
+Instructions in AGENTS.md/CLAUDE.md are text in the model's context window. The model is statistically likely to follow them, but there is no mechanism that forces compliance — context pressure or a long conversation can cause drift, and an agent can in principle ignore them entirely. Think of AGENTS.md as a policy document: it shapes behavior between enforcement points, but it is not a safety rail.
+
+**Hooks are deterministic**: they run as shell commands at fixed lifecycle events and fire every time, with no exceptions. A hook that exits 2 on a failing test cannot be talked past — it blocks the tool call at the harness level, not the model level. For anything that must not be bypassed (committing without tests, touching a protected file), use a hook or a filesystem permission, not an instruction.
 
 Two hooks to scaffold in `.claude/settings.json`, targeting this stack:
 
