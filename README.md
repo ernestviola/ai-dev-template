@@ -6,77 +6,116 @@ A reusable repo scaffold for AI-assisted development. Clone this for any new pro
 
 1. **Harness** — constrain what an AI coding agent can touch, require verification (tests) before accepting changes, and leave an audit trail of what changed and why.
 2. **Cost discipline** — keep context small and relevant instead of re-explaining project state every session.
-3. **Tool-agnostic** — instructions live in a format any AI coding agent can read (AGENTS.md), not locked to one vendor.
+3. **Agent-agnostic** — enforcement lives at the container and git level, not inside any one agent's config. Instructions live in AGENTS.md, readable by any agent.
 
-## Stack
-
-Node/TypeScript. Test runner: Vitest (or Jest — pick one and be consistent; Vitest is lighter to configure for a small project). Linter/formatter: ESLint + Prettier.
-
-## Structure to scaffold
+## Structure
 
 ```
 project-root/
-├── AGENTS.md              # primary instructions, tool-agnostic (see below)
-├── CLAUDE.md               # thin pointer file: "See @AGENTS.md for project instructions"
+├── AGENTS.md                        # primary instructions, agent-agnostic
+├── CLAUDE.md                        # thin pointer: "See @AGENTS.md"
+├── docker-compose.yml               # container sandbox + egress proxy
+├── .devcontainer/
+│   ├── devcontainer.json            # devcontainer entrypoint (uses compose)
+│   ├── Dockerfile                   # workspace image (language-agnostic base)
+│   ├── Dockerfile.proxy             # tinyproxy image
+│   ├── tinyproxy.conf               # proxy config: FilterDefaultDeny + domain allowlist
+│   └── proxy-entrypoint.sh          # populates filter file at proxy startup
+├── .githooks/
+│   ├── pre-commit                   # quality gate (lint + test) + secret file block
+│   └── pre-push                     # blocks force push to main/master
+├── hooks/
+│   ├── allowed-domains.txt          # egress allowlist (base domains; extend per project)
+│   ├── config                       # TEST_CMD and LINT_CMD — fill in per project
+│   └── install.sh                   # sets core.hooksPath and makes hooks executable
 ├── .claude/
-│   └── settings.json        # hooks config (see Enforcement notes below)
-├── src/                     # project code, organized by module
-├── tests/                   # mirrors src/ structure
+│   └── settings.json                # Claude-specific layer: deny list + auto-formatter
+├── src/                             # project code
+├── tests/                           # mirrors src/
 ├── docs/
-│   ├── CONTEXT.md           # current task, decisions, open questions — pruned regularly
-│   └── CHANGES.md           # log of AI-assisted changes
-├── .eslintrc / eslint.config.js
-├── .prettierrc
-├── .gitignore
-├── package.json             # includes test, lint, format scripts
-└── vitest.config.ts (or jest.config.ts)
+│   ├── CONTEXT.md                   # current task, decisions, open questions — pruned each session
+│   └── CHANGES.md                   # log of AI-assisted changes
+└── .gitignore
 ```
+
+## Enforcement layers
+
+The harness has three layers, from hardest to softest:
+
+### 1. Container (hard)
+
+`docker-compose.yml` runs two services:
+
+- **workspace** — capability-dropped (`--cap-drop=ALL`), non-root user (`agent`), no direct internet access. The agent works here.
+- **proxy** — tinyproxy with `FilterDefaultDeny Yes` and a per-domain allowlist. All outbound HTTP/HTTPS from the workspace routes through it.
+
+The workspace container has no path to the internet except through the proxy, so domain enforcement happens at the hostname level and handles DNS churn correctly (unlike iptables, which resolves IPs once at startup and goes stale).
+
+Base allowlist (`hooks/allowed-domains.txt`):
+```
+github.com
+api.github.com
+objects.githubusercontent.com
+api.anthropic.com
+```
+
+To add a domain: append it to `hooks/allowed-domains.txt` and run `docker compose build proxy && docker compose up -d proxy`.
+
+### 2. Git hooks (medium)
+
+`hooks/install.sh` sets `core.hooksPath .githooks` so hooks fire for any agent that uses git — no agent-specific config required.
+
+**`.githooks/pre-commit`**
+- Blocks staged files matching secret patterns (`.env`, `*.pem`, `*.key`, `*secret*`, `*credential*`, etc.)
+- Runs `LINT_CMD` then `TEST_CMD` from `hooks/config`; exits 1 with output on failure
+- If `hooks/config` is unconfigured, warns and exits 0 (graceful degradation)
+
+**`.githooks/pre-push`**
+- Detects force push to `main`/`master` by checking whether the remote sha is an ancestor of the local sha
+- Exits 1 with a message if so
+
+### 3. Instructions (soft)
+
+AGENTS.md guides agent behavior between the above checkpoints. Instructions are text in the model's context window — the model is statistically likely to follow them, but cannot be forced to. Think of AGENTS.md as a policy document, not a safety rail. For anything that must not be bypassed, use a hook or the container, not an instruction.
+
+### Claude Code layer (optional)
+
+`.claude/settings.json` adds two Claude-specific enhancements on top of the above:
+
+- **`permissions.deny`** — blocks destructive Bash patterns (`rm -rf *`, `git reset --hard`, `git push --force`, piping to `bash`/`sh`)
+- **Auto-formatter** — runs `prettier --write` on every file after an Edit or Write tool call
+
+This layer is additive. The core harness (container + git hooks) works without it.
 
 ## AGENTS.md — content requirements
 
-Plain markdown, no required schema. Keep it lean — per research on context file quality, commands/constraints/non-standard patterns improve agent behavior more than architecture prose, so skip a general "how this system works" section and favor concrete, verifiable rules.
-
-Sections, in this order:
+Plain markdown, no required schema. Sections, in this order:
 
 1. **Project overview** — one or two sentences: what this project is, primary language/framework and version.
-2. **Build and test commands** — exact commands with flags (not vague tool names), e.g. `pytest tests/ -v`, not "run the tests."
-3. **Code style guidelines** — only rules that differ from language defaults. Don't restate what a linter/formatter already enforces.
-4. **Testing instructions** — how to run the full suite, how to run a single test, what (if anything) should be mocked.
-5. **Boundaries** — explicit list of files/directories the agent should not modify without asking first (this is the core harness mechanism).
+2. **Build and test commands** — exact commands with flags. Also fill in `hooks/config` so the pre-commit gate knows what to run.
+3. **Code style guidelines** — only rules that differ from language defaults.
+4. **Testing instructions** — full suite, single test, what to mock.
+5. **Boundaries** — files/directories the agent must not modify without confirmation. Default: `.devcontainer/`, `.githooks/`, `hooks/`, `docker-compose.yml`, `.gitignore`, CI/infra files.
 6. **Security considerations** — secrets handling, files to never read or commit.
-7. **Commit/PR guidelines** — branch naming, commit message format if any.
+7. **Commit/PR guidelines** — branch naming, commit message format.
 
-Do not auto-generate this file via an agent's `/init` command and leave it as-is — LLM-generated context files tend to be over-broad and increase reasoning cost without improving outcomes. Use `/init` (if available) only as a rough first draft, then cut it down to concrete, verifiable rules.
-
-## CLAUDE.md — content
-
-Claude Code does not natively read AGENTS.md, so this file exists purely to point it there:
-
-```markdown
-# Claude Code Instructions
-
-See @AGENTS.md for project instructions, conventions, and boundaries.
-```
+Do not auto-generate this file via an agent's `/init` command and leave it as-is. Use `/init` only as a rough first draft, then cut it down to concrete, verifiable rules.
 
 ## docs/CONTEXT.md — template
 
-This is the context-management piece (the "Obsidian-style" approach) — pull in only current, relevant state instead of re-explaining project history each session. Prune the "Recently Completed" section aggressively; this is where context bloat creeps in.
+Pull in only current, relevant state instead of re-explaining project history each session. Prune "Recently Completed" aggressively — this is where context bloat creeps in.
 
 ```markdown
 ## Current Task
-
 (one paragraph — what you're working on right now)
 
 ## Decisions Made
-
 - decision — why
 
 ## Open Questions
-
 -
 
 ## Recently Completed
-
 (keep this short — prune old entries)
 ```
 
@@ -88,72 +127,22 @@ One line per AI-assisted change. This is the audit trail that makes "I review ev
 YYYY-MM-DD | Short description of change | Diff reviewed: yes/no | Tests passed: yes/no
 ```
 
-## Enforcement notes
-
-The actual harness is the hooks, not AGENTS.md. These two mechanisms serve different roles:
-
-| Mechanism | Role |
-|---|---|
-| AGENTS.md boundaries | Guides the model's choices (soft) |
-| Hooks | Enforces outcomes at fixed lifecycle points (hard) |
-
-Instructions in AGENTS.md/CLAUDE.md are text in the model's context window. The model is statistically likely to follow them, but there is no mechanism that forces compliance — context pressure or a long conversation can cause drift, and an agent can in principle ignore them entirely. Think of AGENTS.md as a policy document: it shapes behavior between enforcement points, but it is not a safety rail.
-
-**Hooks are deterministic**: they run as shell commands at fixed lifecycle events and fire every time, with no exceptions. A hook that exits 2 on a failing test cannot be talked past — it blocks the tool call at the harness level, not the model level. For anything that must not be bypassed (committing without tests, touching a protected file), use a hook or a filesystem permission, not an instruction.
-
-Two hooks to scaffold in `.claude/settings.json`, targeting this stack:
-
-**1. Pre-commit quality gate (PreToolUse on Bash)** — blocks a `git commit` if lint/tests fail. Exit code 2 blocks the tool call and Claude sees the output, which typically causes it to fix the issue and retry.
-
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pre-commit-check.sh"
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-`pre-commit-check.sh` should: read the pending Bash command from stdin (JSON), check if it starts with `git commit`, and if so run `npm run lint && npm run test` — exit 2 with the failure output on stdout/stderr if either fails, exit 0 otherwise.
-
-**2. Auto-format on file write (PostToolUse on Edit|Write)** — keeps diffs clean so review isn't cluttered by formatting noise.
-
-```json
-{
-  "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "Edit|Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "f=$(jq -r '.tool_input.file_path'); npx prettier --write \"$f\" 2>/dev/null; true"
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-Other notes:
-
-- Target under ~200 lines for CLAUDE.md-equivalent instruction content; longer files consume more context and reduce adherence.
-- If AGENTS.md instructions grow large for a specific area (e.g., a subsystem with unusual conventions), split into path-scoped files under `.claude/rules/` rather than growing one large file.
-- Verify hook behavior on a throwaway commit before relying on it — a misconfigured PreToolUse hook can block all Bash usage, not just commits.
-
 ## How to use this template
 
 1. Clone this repo for a new project.
-2. Fill in AGENTS.md sections 1–4 and 6–7 with actual project specifics; leave section 5 (boundaries) intentionally strict until you have reason to loosen it.
-3. Start every AI-assisted session by checking docs/CONTEXT.md is current; prune before adding.
-4. After each AI-assisted change: run tests, review the diff, log it in docs/CHANGES.md.
+2. Fill in `AGENTS.md` sections 1–4 and 6–7 with project specifics; leave section 5 (boundaries) strict until you have reason to loosen it.
+3. Set `TEST_CMD` and `LINT_CMD` in `hooks/config`.
+4. Add any required domains to `hooks/allowed-domains.txt` (e.g. `registry.npmjs.org`, `pypi.org`).
+5. Open in a devcontainer (`Reopen in Container` in VS Code or Claude Code) — `postCreateCommand` runs `hooks/install.sh` automatically.
+6. Start every AI-assisted session by checking `docs/CONTEXT.md` is current; prune before adding.
+7. After each AI-assisted change: run tests, review the diff, log it in `docs/CHANGES.md`.
+
+## Extending for a specific language
+
+Language-specific variants should:
+- Swap the workspace base image in `.devcontainer/Dockerfile` (e.g. `node:22-slim`, `python:3.12-slim`)
+- Add package manager domains to `hooks/allowed-domains.txt`
+- Fill in `hooks/config` with real test and lint commands
+- Add language tooling (`package.json`, `pyproject.toml`, etc.) to the project root
+
+The devcontainer, proxy, git hooks, and AGENTS.md structure stay unchanged.
