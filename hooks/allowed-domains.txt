@@ -1,0 +1,4 @@
+github.com
+api.github.com
+objects.githubusercontent.com
+api.anthropic.com

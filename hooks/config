@@ -1,0 +1,8 @@
+# Fill in before first use. These commands are run by .githooks/pre-commit.
+# Examples:
+#   TEST_CMD="npm test"
+#   TEST_CMD="pytest tests/ -v"
+#   LINT_CMD="npm run lint"
+#   LINT_CMD="ruff check ."
+TEST_CMD=""
+LINT_CMD=""

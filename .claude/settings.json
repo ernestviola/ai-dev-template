@@ -1,0 +1,28 @@
+{
+  "_comment": "Claude Code-specific layer. Core enforcement lives in .githooks/ and docker-compose.yml — not here.",
+  "permissions": {
+    "deny": [
+      "Bash(rm -rf *)",
+      "Bash(git reset --hard*)",
+      "Bash(git push --force*)",
+      "Bash(git push -f *)",
+      "Bash(* | bash)",
+      "Bash(* | sh)",
+      "Bash(wget* | *)",
+      "Bash(curl* | *)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=$(echo \"$CLAUDE_TOOL_INPUT\" | jq -r '.file_path // empty'); [ -n \"$f\" ] && npx prettier --write \"$f\" 2>/dev/null; true"
+          }
+        ]
+      }
+    ]
+  }
+}

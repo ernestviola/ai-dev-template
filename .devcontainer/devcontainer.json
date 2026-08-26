@@ -1,0 +1,8 @@
+{
+  "name": "AI Dev Sandbox",
+  "dockerComposeFile": ["../docker-compose.yml"],
+  "service": "workspace",
+  "workspaceFolder": "/workspace",
+  "remoteUser": "agent",
+  "postCreateCommand": "bash hooks/install.sh"
+}

@@ -1,0 +1,30 @@
+services:
+  workspace:
+    build:
+      context: .
+      dockerfile: .devcontainer/Dockerfile
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID]
+    security_opt: [no-new-privileges:true]
+    environment:
+      HTTP_PROXY: http://proxy:8888
+      HTTPS_PROXY: http://proxy:8888
+      NO_PROXY: localhost,127.0.0.1
+    networks: [internal]
+    volumes:
+      - .:/workspace:cached
+
+  proxy:
+    build:
+      context: .devcontainer
+      dockerfile: Dockerfile.proxy
+    volumes:
+      - ./hooks/allowed-domains.txt:/etc/tinyproxy/allowed-domains.txt:ro
+    networks:
+      - internal
+      - external
+
+networks:
+  internal:
+    internal: true
+  external: {}

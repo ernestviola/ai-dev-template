@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+CONFIG="$REPO_ROOT/hooks/config"
+
+# Load language-specific commands
+if [ -f "$CONFIG" ]; then
+  source "$CONFIG"
+fi
+
+# Block staged files matching secret patterns
+STAGED=$(git diff --cached --name-only 2>/dev/null || true)
+if [ -n "$STAGED" ]; then
+  SECRET_PATTERNS=('\.env$' '\.env\.' '\.pem$' '\.key$' '\.p12$' '\.pfx$' 'secret' 'credential' 'token')
+  for pattern in "${SECRET_PATTERNS[@]}"; do
+    matches=$(echo "$STAGED" | grep -iE "$pattern" 2>/dev/null || true)
+    if [ -n "$matches" ]; then
+      echo "ERROR: Blocked — staged files match secret pattern '$pattern':"
+      echo "$matches"
+      echo "Remove these files from staging before committing."
+      exit 1
+    fi
+  done
+fi
+
+# Quality gate
+if [ -z "${LINT_CMD:-}" ] && [ -z "${TEST_CMD:-}" ]; then
+  echo "WARNING: hooks/config has no TEST_CMD or LINT_CMD set. Skipping quality gate."
+  exit 0
+fi
+
+if [ -n "${LINT_CMD:-}" ]; then
+  echo "Linting: $LINT_CMD"
+  eval "$LINT_CMD" || { echo "Lint failed. Fix errors before committing."; exit 1; }
+fi
+
+if [ -n "${TEST_CMD:-}" ]; then
+  echo "Testing: $TEST_CMD"
+  eval "$TEST_CMD" || { echo "Tests failed. Fix failures before committing."; exit 1; }
+fi
