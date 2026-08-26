@@ -52,6 +52,7 @@ The harness has three layers, from hardest to softest:
 The workspace container has no path to the internet except through the proxy, so domain enforcement happens at the hostname level and handles DNS churn correctly (unlike iptables, which resolves IPs once at startup and goes stale).
 
 Base allowlist (`hooks/allowed-domains.txt`):
+
 ```
 github.com
 api.github.com
@@ -66,11 +67,13 @@ To add a domain: append it to `hooks/allowed-domains.txt` and run `docker compos
 `hooks/install.sh` sets `core.hooksPath .githooks` so hooks fire for any agent that uses git — no agent-specific config required.
 
 **`.githooks/pre-commit`**
+
 - Blocks staged files matching secret patterns (`.env`, `*.pem`, `*.key`, `*secret*`, `*credential*`, etc.)
 - Runs `LINT_CMD` then `TEST_CMD` from `hooks/config`; exits 1 with output on failure
 - If `hooks/config` is unconfigured, warns and exits 0 (graceful degradation)
 
 **`.githooks/pre-push`**
+
 - Detects force push to `main`/`master` by checking whether the remote sha is an ancestor of the local sha
 - Exits 1 with a message if so
 
@@ -107,15 +110,19 @@ Pull in only current, relevant state instead of re-explaining project history ea
 
 ```markdown
 ## Current Task
+
 (one paragraph — what you're working on right now)
 
 ## Decisions Made
+
 - decision — why
 
 ## Open Questions
+
 -
 
 ## Recently Completed
+
 (keep this short — prune old entries)
 ```
 
@@ -129,17 +136,20 @@ YYYY-MM-DD | Short description of change | Diff reviewed: yes/no | Tests passed:
 
 ## How to use this template
 
-1. Clone this repo for a new project.
-2. Fill in `AGENTS.md` sections 1–4 and 6–7 with project specifics; leave section 5 (boundaries) strict until you have reason to loosen it.
-3. Set `TEST_CMD` and `LINT_CMD` in `hooks/config`.
-4. Add any required domains to `hooks/allowed-domains.txt` (e.g. `registry.npmjs.org`, `pypi.org`).
-5. Open in a devcontainer (`Reopen in Container` in VS Code or Claude Code) — `postCreateCommand` runs `hooks/install.sh` automatically.
-6. Start every AI-assisted session by checking `docs/CONTEXT.md` is current; prune before adding.
-7. After each AI-assisted change: run tests, review the diff, log it in `docs/CHANGES.md`.
+1. Clone this repo for a new project. Or build repo from template skipping step 2.
+2. Detach from the template's history: `rm -rf .git && git init && git add . && git commit -m "init from template"`.
+3. Pick a language and swap the base image in `.devcontainer/Dockerfile` (e.g. `node:22-slim`, `python:3.12-slim`) — keep the `groupadd`/`useradd agent` block unchanged across all variants.
+4. Add any required domains to `hooks/allowed-domains.txt` (e.g. `registry.npmjs.org`, `pypi.org`) — do this _before_ opening the container, so the proxy is built with the right allowlist from the start.
+5. Fill in `AGENTS.md` sections 1–4 and 6–7 with project specifics; leave section 5 (boundaries) strict until you have reason to loosen it.
+6. Set `TEST_CMD` and `LINT_CMD` in `hooks/config`.
+7. Open in a devcontainer (`Reopen in Container` in VS Code or Claude Code) — `postCreateCommand` runs `hooks/install.sh` automatically. Verify: `whoami` returns `agent`, `curl` to an allowed domain succeeds, `curl` to a non-allowed domain is blocked.
+8. Start every AI-assisted session by checking `docs/CONTEXT.md` is current; prune before adding.
+9. After each AI-assisted change: run tests, review the diff, log it in `docs/CHANGES.md`.
 
 ## Extending for a specific language
 
 Language-specific variants should:
+
 - Swap the workspace base image in `.devcontainer/Dockerfile` (e.g. `node:22-slim`, `python:3.12-slim`)
 - Add package manager domains to `hooks/allowed-domains.txt`
 - Fill in `hooks/config` with real test and lint commands
