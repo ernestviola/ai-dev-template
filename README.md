@@ -15,6 +15,7 @@ project-root/
 ├── AGENTS.md                        # primary instructions, agent-agnostic
 ├── CLAUDE.md                        # thin pointer: "See @AGENTS.md"
 ├── docker-compose.yml               # container sandbox + egress proxy
+├── .env.local                       # GITHUB_TOKEN — gitignored, created per clone (see below)
 ├── .devcontainer/
 │   ├── devcontainer.json            # devcontainer entrypoint (uses compose)
 │   ├── Dockerfile                   # workspace image (language-agnostic base)
@@ -46,8 +47,8 @@ The harness has three layers, from hardest to softest:
 
 `docker-compose.yml` runs two services:
 
-- **workspace** — capability-dropped (`--cap-drop=ALL`), non-root user (`agent`), no direct internet access. The agent works here.
-- **proxy** — tinyproxy with `FilterDefaultDeny Yes` and a per-domain allowlist. All outbound HTTP/HTTPS from the workspace routes through it.
+- **workspace** — capability-dropped (`--cap-drop=ALL`), non-root user (`agent`), no direct internet access. The agent works here. Runs `command: sleep infinity` — required so the container stays alive indefinitely rather than exiting once its startup command finishes; without this, `postCreateCommand` runs once and the container immediately stops.
+- **proxy** — tinyproxy with `FilterDefaultDeny Yes`, `FilterType fnmatch`, and a per-domain allowlist. All outbound HTTP/HTTPS from the workspace routes through it. `fnmatch` matters specifically: it's what lets `hooks/allowed-domains.txt` hold plain hostnames (`github.com`) instead of requiring regex — the other valid values (`bre`, `ere`) expect POSIX regex syntax, and an invalid value (anything else, including `basic`) causes tinyproxy to fail to start with a config syntax error.
 
 The workspace container has no path to the internet except through the proxy, so domain enforcement happens at the hostname level and handles DNS churn correctly (unlike iptables, which resolves IPs once at startup and goes stale).
 
@@ -89,6 +90,50 @@ AGENTS.md guides agent behavior between the above checkpoints. Instructions are 
 - **Auto-formatter** — runs `prettier --write` on every file after an Edit or Write tool call
 
 This layer is additive. The core harness (container + git hooks) works without it.
+
+## Git identity and pushing from the container
+
+The workspace container needs two things to commit and push as you, without either living permanently inside the disposable container filesystem.
+
+**Identity** — `docker-compose.yml` mounts your host's git config read-only to a non-default path:
+
+```yaml
+volumes:
+  - .:/workspace:cached
+  - ~/.gitconfig:/home/agent/.gitconfig-host:ro
+```
+
+`.devcontainer/Dockerfile` then creates a normal, writable `~/.gitconfig` inside the image that includes the mounted file:
+
+```dockerfile
+USER agent
+RUN git config --global include.path /home/agent/.gitconfig-host
+```
+
+This gives you your real name/email automatically via the include, while still allowing `git config --global` to set additional values on top — mounting straight to `~/.gitconfig` as read-only would block any further config writes entirely.
+
+**Authentication** — uses a GitHub personal access token, supplied via environment variable, never written to disk inside the container:
+
+1. Generate a fine-grained PAT scoped to just the repo(s) you need, with **Contents: Read and write** permission.
+2. Create `.env.local` in the project root (gitignored — see below):
+   ```
+   GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxx
+   ```
+3. Reference it in `docker-compose.yml`:
+   ```yaml
+   services:
+     workspace:
+       env_file:
+         - .env.local
+   ```
+4. The credential helper is baked into `.devcontainer/Dockerfile`, right after the identity include, so it survives container rebuilds without being reconfigured each time:
+   ```dockerfile
+   RUN git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=$GITHUB_TOKEN"; }; f'
+   ```
+
+With this in place, `git push` over HTTPS authenticates silently — no prompt, no token written to the container's disk. Note this only supports HTTPS remotes (`https://github.com/...`); SSH remotes won't work here, since SSH is a raw TCP connection that can't route through the HTTP proxy the workspace is restricted to.
+
+`.env.local` must never be committed. The template's `.gitignore` already covers it via a wildcard pattern (`.env`, `*.env`, `.env.*`), but confirm with `git status` after creating it that it doesn't show up as untracked.
 
 ## AGENTS.md — content requirements
 
@@ -136,21 +181,22 @@ YYYY-MM-DD | Short description of change | Diff reviewed: yes/no | Tests passed:
 
 ## How to use this template
 
-1. Clone this repo for a new project. Or build repo from template skipping step 2.
+1. Clone this repo for a new project. Or build repo from template, skipping step 2.
 2. Detach from the template's history: `rm -rf .git && git init && git add . && git commit -m "init from template"`.
-3. Pick a language and swap the base image in `.devcontainer/Dockerfile` (e.g. `node:22-slim`, `python:3.12-slim`) — keep the `groupadd`/`useradd agent` block unchanged across all variants.
+3. Pick a language and swap the base image in `.devcontainer/Dockerfile` (e.g. `node:22-slim`, `python:3.12-slim`) — keep the `groupadd`/`useradd agent` block and the git identity/credential-helper lines unchanged across all variants.
 4. Add any required domains to `hooks/allowed-domains.txt` (e.g. `registry.npmjs.org`, `pypi.org`) — do this _before_ opening the container, so the proxy is built with the right allowlist from the start.
-5. Fill in `AGENTS.md` sections 1–4 and 6–7 with project specifics; leave section 5 (boundaries) strict until you have reason to loosen it.
-6. Set `TEST_CMD` and `LINT_CMD` in `hooks/config`.
-7. Open in a devcontainer (`Reopen in Container` in VS Code or Claude Code) — `postCreateCommand` runs `hooks/install.sh` automatically. Verify: `whoami` returns `agent`, `curl` to an allowed domain succeeds, `curl` to a non-allowed domain is blocked.
-8. Start every AI-assisted session by checking `docs/CONTEXT.md` is current; prune before adding.
-9. After each AI-assisted change: run tests, review the diff, log it in `docs/CHANGES.md`.
+5. Create `.env.local` with a `GITHUB_TOKEN` (see "Git identity and pushing from the container" above) if you'll be pushing from inside the container.
+6. Fill in `AGENTS.md` sections 1–4 and 6–7 with project specifics; leave section 5 (boundaries) strict until you have reason to loosen it.
+7. Set `TEST_CMD` and `LINT_CMD` in `hooks/config`.
+8. Open the devcontainer — either `Reopen in Container` in VS Code (requires the Dev Containers extension), or from any terminal via the standalone CLI: `npm install -g @devcontainers/cli`, then `devcontainer up --workspace-folder .` and `devcontainer exec --workspace-folder . bash`. `postCreateCommand` runs `hooks/install.sh` automatically either way. Verify: `whoami` returns `agent`, `curl` to an allowed domain succeeds, `curl` to a non-allowed domain is blocked with a 403.
+9. Start every AI-assisted session by checking `docs/CONTEXT.md` is current; prune before adding.
+10. After each AI-assisted change: run tests, review the diff, log it in `docs/CHANGES.md`.
 
 ## Extending for a specific language
 
 Language-specific variants should:
 
-- Swap the workspace base image in `.devcontainer/Dockerfile` (e.g. `node:22-slim`, `python:3.12-slim`)
+- Swap the workspace base image in `.devcontainer/Dockerfile` (e.g. `node:22-slim`, `python:3.12-slim`) — keep the `groupadd`/`useradd agent`, git identity include, and credential helper lines intact
 - Add package manager domains to `hooks/allowed-domains.txt`
 - Fill in `hooks/config` with real test and lint commands
 - Add language tooling (`package.json`, `pyproject.toml`, etc.) to the project root

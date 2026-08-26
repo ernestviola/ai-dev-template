@@ -3,6 +3,9 @@ services:
     build:
       context: .
       dockerfile: .devcontainer/Dockerfile
+    command: sleep infinity
+    env_file:
+      - .env.local
     cap_drop: [ALL]
     cap_add: [CHOWN, SETUID, SETGID]
     security_opt: [no-new-privileges:true]
@@ -13,6 +16,7 @@ services:
     networks: [internal]
     volumes:
       - .:/workspace:cached
+      - ~/.gitconfig:/home/agent/.gitconfig-host:ro
 
   proxy:
     build:
